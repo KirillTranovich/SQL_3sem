@@ -1,0 +1,113 @@
+Запросы для очистки:
+Удаление некорректных записей в таблице fin_users:
+DELETE FROM fin_users WHERE instr(user_id, 'User_') != 1;
+
+
+Удаление некорректных записей в таблице fin_log:
+DELETE FROM fin_log WHERE user_id LIKE '#error%';
+
+Исправление формата user_id в таблице fin_log:
+UPDATE fin_log 
+SET user_id = substr(user_id, instr(user_id, 'user_'), length(user_id)) 
+WHERE instr(user_id, 'user_') > 0;
+
+
+Преобразование формата user_id в таблице fin_users:
+UPDATE fin_users 
+SET user_id = replace(user_id, 'User', 'u') 
+WHERE user_id LIKE 'User%';
+
+
+a) Сколько раз человек должен посетить сайт, чтобы сделать ставку:
+
+WITH first_bet_time AS (
+    SELECT user_id, MIN(time) AS first_bet_time
+    FROM fin_log
+    WHERE bet != ''
+    GROUP BY user_id
+),
+user_visits AS (
+    SELECT user_id, COUNT(*) AS visits_before_bet
+    FROM fin_log
+    WHERE time <= (SELECT first_bet_time FROM first_bet_time WHERE first_bet_time.user_id = fin_log.user_id)
+    GROUP BY user_id
+)
+SELECT MIN(visits_before_bet) AS min_visits_to_bet FROM user_visits;
+
+
+b) Средний выигрыш в процентах:
+
+WITH win_ratios AS (
+    SELECT (win * 100.0 / bet) AS win_percentage
+    FROM fin_log
+    WHERE bet > 0
+)
+SELECT ROUND(AVG(win_percentage), 2) AS avg_win_percentage FROM win_ratios;
+
+
+c) Баланс по каждому пользователю:
+
+WITH user_wins AS (
+    SELECT user_id, SUM(win) AS total_wins
+    FROM fin_log
+    GROUP BY user_id
+),
+user_bets AS (
+    SELECT user_id, SUM(bet) AS total_bets
+    FROM fin_log
+    GROUP BY user_id
+)
+SELECT user_wins.user_id, 
+       COALESCE(total_wins, 0) - COALESCE(total_bets, 0) AS balance
+FROM user_wins
+LEFT JOIN user_bets ON user_wins.user_id = user_bets.user_id;
+
+
+d) Города с самыми выгодными ставками:
+SELECT geo 
+FROM fin_users
+JOIN (
+    SELECT user_id, MAX(100.0 * win / bet) AS max_profit_ratio
+    FROM fin_log
+    WHERE bet > 0
+    GROUP BY user_id
+) AS user_ratios ON fin_users.user_id = user_ratios.user_id
+ORDER BY max_profit_ratio DESC
+LIMIT 1;
+
+
+e) Города с самыми высокими ставками:
+SELECT geo 
+FROM fin_users
+JOIN (
+    SELECT user_id, MAX(bet) AS max_bet
+    FROM fin_log
+    WHERE bet > 0
+    GROUP BY user_id
+) AS user_bets ON fin_users.user_id = user_bets.user_id
+ORDER BY max_bet DESC
+LIMIT 1;
+f) Среднее время от первого визита до первой ставки:
+
+Преобразование времени:
+UPDATE fin_log 
+SET time = CASE
+             WHEN time LIKE '[%' THEN substr(time, 2, LENGTH(time) - 2)
+             WHEN LENGTH(time) = 18 THEN substr(time, 1, 11) || '0' || substr(time, 12)
+           END;
+
+Расчет среднего времени:
+WITH visit_times AS (
+    SELECT user_id, 
+           MIN(time) AS first_visit_time,
+           MIN(CASE WHEN bet != '' THEN time END) AS first_bet_time
+    FROM fin_log
+    GROUP BY user_id
+),
+time_differences AS (
+    SELECT user_id, 
+           CAST(strftime('%s', first_bet_time) AS INTEGER) - CAST(strftime('%s', first_visit_time) AS INTEGER) AS seconds_diff
+    FROM visit_times
+    WHERE first_bet_time IS NOT NULL
+)
+SELECT ROUND(AVG(seconds_diff) / 3600.0, 2) AS avg_time_to_bet_hours FROM time_differences;
